@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Environment variables and passwords
+.env
+.env.*
+!.env.example
+
+# Node.js
+node_modules/
+dist/
+dist-ssr/
+
+# ChromaDB local database
+chroma_db/
+
+# Logs
+*.log
+logs/
+
+# Editor files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
