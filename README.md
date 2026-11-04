@@ -44,7 +44,7 @@ Use MySQL Workbench or the MySQL CLI. Execute these scripts in order on a **fres
 
 **Warning:** `failure_lineage_ddl.sql` begins with `DROP DATABASE IF EXISTS failure_lineage`; it deletes an existing database with that name. Back up any database you need before running it. The DML/advanced scripts insert demonstration rows and should be run only once on the fresh schema.
 
-The scripts create sample users, models, datasets, emails, predictions, triggers, the `sp_record_actual_result` stored procedure, views, and sample verification records.
+The scripts create sample users, models, datasets, emails, predictions, triggers, the `sp_record_actual_result` stored procedure, views, and sample verification records. After setup, you can run `sql/queries.sql` for portable checks of the tables, verified accuracy, failures, lineage, feedback, and routines.
 
 ## 3. Configure Python backend
 ```powershell
@@ -74,7 +74,7 @@ Check:
 - Swagger docs: http://127.0.0.1:8000/docs
 
 ### Demo authentication note
-The API includes a local demo-user guard. Configure `DEMO_USER_ID` to an existing row in `users` and `DEMO_USER_ROLE=admin` in `.env`. This is a local development convenience, not production authentication. Do not expose it to the internet. Replace it with a reviewed password/token authentication flow before deployment.
+The checked-in UI/backend configuration uses a local demo-user guard. Configure `DEMO_USER_ID` to an existing row in `users` and `DEMO_USER_ROLE=admin` in `.env`. This is a local development convenience, not password-based login/logout or production authentication. The login/logout UI and token-based auth migration from the developer's separate local working copy are not part of this repository revision. Do not expose this demo configuration to the internet. Replace it with a reviewed password/token authentication flow before deployment.
 
 ## 4. Start React frontend
 Open a second PowerShell window at the repository root:
