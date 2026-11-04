@@ -1,0 +1,62 @@
+text,label
+"Your bank statement is available for download",FINANCE
+"Credit card payment is due tomorrow",FINANCE
+"Your loan EMI is due this week",FINANCE
+"Your savings account balance was updated",FINANCE
+"Monthly financial statement attached",FINANCE
+"Your bank transfer was successful",FINANCE
+"Invoice payment confirmation received",FINANCE
+"Your account transaction summary is ready",FINANCE
+"Payment receipt for your purchase",FINANCE
+"Your loan repayment schedule is available",FINANCE
+"Please review the attached invoice before payment",FINANCE
+"Your salary has been credited to your bank account",FINANCE
+"Your credit card statement is ready",FINANCE
+"A transaction was posted to your checking account",FINANCE
+"Please pay the outstanding utility bill by Friday",FINANCE
+"The refund for your order has been processed",FINANCE
+"Team meeting scheduled for tomorrow morning",WORK
+"Please review the project report",WORK
+"Weekly team status update",WORK
+"The manager scheduled a conference call",WORK
+"Please submit your assignment report",WORK
+"Project deadline has been extended",WORK
+"Join the team discussion this afternoon",WORK
+"Your office meeting agenda is attached",WORK
+"Please review the presentation slides",WORK
+"Employee performance review meeting",WORK
+"The engineering team will deploy the update tonight",WORK
+"Please send the updated project timeline",WORK
+"The client presentation is scheduled for Monday",WORK
+"Your task has been assigned in the project tracker",WORK
+"Please share the minutes from the team meeting",WORK
+"You won a free cash prize",SPAM
+"Claim your lottery winnings now",SPAM
+"Congratulations you won a million dollars",SPAM
+"Click here to collect your free reward",SPAM
+"You are selected for a surprise jackpot",SPAM
+"Urgent claim your prize immediately",SPAM
+"Free gift waiting for you click now",SPAM
+"You have won an exclusive lottery",SPAM
+"Get rich quickly with this secret offer",SPAM
+"Claim your guaranteed cash reward today",SPAM
+"Your account won a cash award, verify details now",SPAM
+"Claim an unbelievable reward by clicking this link",SPAM
+"You are our lucky winner, send your details",SPAM
+"Congratulations, a prize is waiting for you",SPAM
+"Act now to receive a guaranteed cash gift",SPAM
+"Special discount on your next purchase",PROMOTION
+"Our seasonal sale starts today",PROMOTION
+"Get twenty percent off selected products",PROMOTION
+"New collection available at discounted prices",PROMOTION
+"Exclusive member shopping offer",PROMOTION
+"Limited time sale on electronics",PROMOTION
+"Enjoy savings on your favorite products",PROMOTION
+"Weekend promotional offer for customers",PROMOTION
+"Buy one get one free this weekend",PROMOTION
+"Shop our latest product deals today",PROMOTION
+"Subscribe today for a discount on your next order",PROMOTION
+"Festival offers are available across the store",PROMOTION
+"Use this coupon code for a special discount",PROMOTION
+"Discover our new collection at introductory prices",PROMOTION
+"Members receive free delivery during the sale",PROMOTION
