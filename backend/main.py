@@ -75,9 +75,11 @@ def dashboard(user=Depends(current_user)):
         """)
         stats = cur.fetchone()
         return {
-            "total_predictions": total, "verified": stats["verified"],
-            "correct": stats["correct"], "failures": stats["failures"],
-            "accuracy": float(stats["accuracy"] or 0),
+            "total_predictions": total,
+            "verified_predictions": stats["verified"],
+            "correct_predictions": stats["correct"],
+            "failed_predictions": stats["failures"],
+            "accuracy_percent": float(stats["accuracy"] or 0),
             "indexed_vectors": collection_count(),
         }
     finally:
