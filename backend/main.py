@@ -1,262 +1,241 @@
-
-from contextlib import asynccontextmanager
-
-from fastapi import FastAPI, HTTPException, Query
+import os
+from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 from mysql.connector import Error
+from pydantic import BaseModel, Field
 
-from database import get_connection
 from classifier import predict_email
-from vector_store import (
-    collection,
-    sync_failures,
-    search_similar_failures
-)
+from database import get_connection
+from vector_store import collection_count, index_existing_records, search_cases, upsert_case
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # Synchronize existing MySQL failures when the API starts.
-    sync_failures()
-    yield
-
-
-app = FastAPI(
-    title="AI Model Failure Investigation System",
-    version="1.0",
-    lifespan=lifespan
-)
-
+app = FastAPI(title="AI Model Failure Investigation System", version="2.0")
+origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
-    allow_credentials=False,
-    allow_methods=["GET", "POST"],
-    allow_headers=["*"]
+    allow_origins=[origin.strip() for origin in origins if origin.strip()],
+    allow_credentials=True, allow_methods=["*"], allow_headers=["*"],
 )
 
-
-class EmailInput(BaseModel):
+class AnalyzeBody(BaseModel):
     sender: str = ""
-    subject: str = Field(min_length=1)
+    subject: str = Field(default="", max_length=255)
     email_text: str = Field(min_length=1)
+    model_id: int
 
-
-class VerificationInput(BaseModel):
+class VerifyBody(BaseModel):
     prediction_id: int
     actual_class: str
     user_id: int
     comment: str = ""
+
+class SearchBody(BaseModel):
+    query: str
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+def current_user():
+    user_id = os.getenv("DEMO_USER_ID")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Login required")
+    return {"user_id": int(user_id), "role": os.getenv("DEMO_USER_ROLE", "admin")}
+
+
+def admin_required(user=Depends(current_user)):
+    if user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required")
+    return user
 
 
 @app.get("/api/health")
 def health():
     conn = get_connection()
     try:
-        cursor = conn.cursor()
-        cursor.execute("SELECT 1")
-        cursor.fetchone()
-        cursor.close()
-
-        return {
-            "status": "ok",
-            "mysql": "connected",
-            "vectors": collection.count()
-        }
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
+        cur.close()
+        return {"status": "ok", "database": "connected", "vector_count": collection_count()}
     finally:
         conn.close()
 
 
 @app.get("/api/dashboard")
-def dashboard():
+def dashboard(user=Depends(current_user)):
     conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-
+    cur = conn.cursor(dictionary=True)
     try:
-        cursor.execute("""
-            SELECT COUNT(*) AS total_predictions
-            FROM predictions
-        """)
-        total = cursor.fetchone()["total_predictions"]
-
-        cursor.execute("""
-            SELECT
-                COUNT(*) AS verified_predictions,
-                COALESCE(SUM(is_correct = 1), 0)
-                    AS correct_predictions,
-                COALESCE(SUM(is_correct = 0), 0)
-                    AS failed_predictions,
-                ROUND(100 * AVG(is_correct), 2)
-                    AS accuracy_percent
+        cur.execute("SELECT COUNT(*) AS total_predictions FROM predictions")
+        total = cur.fetchone()["total_predictions"]
+        cur.execute("""
+            SELECT COUNT(*) AS verified,
+                   COALESCE(SUM(is_correct = 1), 0) AS correct,
+                   COALESCE(SUM(is_correct = 0), 0) AS failures,
+                   ROUND(100 * COALESCE(AVG(is_correct), 0), 2) AS accuracy
             FROM actual_results
         """)
-        stats = cursor.fetchone()
-
+        stats = cur.fetchone()
         return {
-            "total_predictions": total,
-            **stats
+            "total_predictions": total, "verified": stats["verified"],
+            "correct": stats["correct"], "failures": stats["failures"],
+            "accuracy": float(stats["accuracy"] or 0),
+            "indexed_vectors": collection_count(),
         }
     finally:
-        cursor.close()
+        cur.close()
+        conn.close()
+
+
+@app.get("/api/models")
+def models(user=Depends(current_user)):
+    conn = get_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("SELECT model_id, model_name, model_version FROM models ORDER BY model_id")
+        return cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.get("/api/predictions")
+def predictions(user=Depends(current_user)):
+    conn = get_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT p.prediction_id, p.model_id, p.email_id, p.predicted_class,
+                   p.confidence_score, p.predicted_at, ar.actual_class, ar.is_correct
+            FROM predictions p
+            LEFT JOIN actual_results ar ON ar.prediction_id = p.prediction_id
+            ORDER BY p.prediction_id DESC
+        """)
+        return cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.get("/api/failures")
+def failures(user=Depends(current_user)):
+    conn = get_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT f.failure_id, f.prediction_id, e.subject, p.predicted_class,
+                   ar.actual_class, ft.failure_type_name, f.description
+            FROM failures f
+            JOIN predictions p ON p.prediction_id = f.prediction_id
+            JOIN emails e ON e.email_id = p.email_id
+            JOIN actual_results ar ON ar.prediction_id = p.prediction_id
+            JOIN failure_types ft ON ft.failure_type_id = f.failure_type_id
+            ORDER BY f.failure_id DESC
+        """)
+        return cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
+
+
+@app.get("/api/lineage")
+def lineage(user=Depends(current_user)):
+    conn = get_connection()
+    cur = conn.cursor(dictionary=True)
+    try:
+        cur.execute("""
+            SELECT lineage_id, prediction_id, email_id, dataset_id, model_id,
+                   model_version, actual_id, failure_id, feedback_id
+            FROM data_lineage ORDER BY lineage_id DESC
+        """)
+        return cur.fetchall()
+    finally:
+        cur.close()
         conn.close()
 
 
 @app.post("/api/analyze")
-def analyze_email(data: EmailInput):
-    result = predict_email(
-        data.subject + " " + data.email_text
-    )
-
-    # Model 2 is the existing Email Classification Model.
-    model_id = 2
-
+@app.post("/api/predict")
+def analyze(body: AnalyzeBody, user=Depends(current_user)):
+    label, confidence = predict_email(body.email_text + "\n" + body.subject)
     conn = get_connection()
-    cursor = conn.cursor()
-
+    cur = conn.cursor()
     try:
-        cursor.execute("""
-            INSERT INTO emails
-                (sender, subject, email_text, metadata)
-            VALUES (%s, %s, %s, JSON_OBJECT(
-                'source', 'frontend'
-            ))
-        """, (
-            data.sender,
-            data.subject,
-            data.email_text
-        ))
-
-        email_id = cursor.lastrowid
-
-        cursor.execute("""
-            INSERT INTO predictions
-                (model_id, email_id,
-                 predicted_class, confidence_score)
-            VALUES (%s, %s, %s, %s)
-        """, (
-            model_id,
-            email_id,
-            result["predicted_class"],
-            result["confidence_score"]
-        ))
-
-        prediction_id = cursor.lastrowid
+        cur.execute("SELECT model_id FROM models WHERE model_id=%s", (body.model_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=400, detail="Selected model_id does not exist")
+        cur.execute("""
+            INSERT INTO emails(sender, subject, email_text, metadata)
+            VALUES(%s, %s, %s, JSON_OBJECT('source', 'react_frontend'))
+        """, (body.sender, body.subject, body.email_text))
+        email_id = cur.lastrowid
+        cur.execute("""
+            INSERT INTO predictions(model_id, email_id, predicted_class, confidence_score)
+            VALUES(%s, %s, %s, %s)
+        """, (body.model_id, email_id, label, confidence))
+        prediction_id = cur.lastrowid
         conn.commit()
-
-    except Error as error:
+    except HTTPException:
         conn.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail=str(error)
-        )
+        raise
+    except Error as exc:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Could not save prediction: {exc}")
     finally:
-        cursor.close()
+        cur.close()
         conn.close()
 
-    similar = search_similar_failures(
-        data.subject + " " + data.email_text
+    upsert_case(
+        f"prediction-{prediction_id}",
+        f"Subject: {body.subject}\nEmail: {body.email_text}\nPredicted: {label}",
+        {"prediction_id": prediction_id, "email_id": email_id,
+         "model_id": body.model_id, "predicted_class": label,
+         "record_type": "prediction"},
     )
+    return {"prediction_id": prediction_id, "email_id": email_id,
+            "predicted_class": label, "confidence_score": confidence}
 
-    return {
-        "email_id": email_id,
-        "prediction_id": prediction_id,
-        **result,
-        "similar_failures": similar
-    }
+
+@app.post("/api/search")
+def vector_search(body: SearchBody, user=Depends(current_user)):
+    return {"results": search_cases(body.query, body.limit)}
 
 
 @app.get("/api/search")
-def search_failures(
-    q: str = Query(min_length=1),
-    limit: int = Query(default=5, ge=1, le=20)
-):
-    return {
-        "query": q,
-        "results": search_similar_failures(q, limit)
-    }
-
-
-@app.get("/api/failures")
-def get_failures():
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-
-    try:
-        cursor.execute("""
-            SELECT *
-            FROM v_failure_investigation
-            ORDER BY failure_id DESC
-        """)
-        return cursor.fetchall()
-    finally:
-        cursor.close()
-        conn.close()
+def vector_search_get(q: str = Query(min_length=1), limit: int = Query(default=5, ge=1, le=20),
+                      user=Depends(current_user)):
+    return {"query": q, "results": search_cases(q, limit)}
 
 
 @app.post("/api/verify")
-def verify_prediction(data: VerificationInput):
+def verify(body: VerifyBody, user=Depends(current_user)):
     conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-
+    cur = conn.cursor()
     try:
-        cursor.callproc(
-            "sp_record_actual_result",
-            [
-                data.prediction_id,
-                data.actual_class,
-                data.user_id,
-                data.comment
-            ]
-        )
-
+        cur.callproc("sp_record_actual_result",
+                     [body.prediction_id, body.actual_class, body.user_id, body.comment])
         results = []
-        for stored_result in cursor.stored_results():
-            results.extend(stored_result.fetchall())
-
-        # The stored procedure commits its own transaction.
-        response = results[0] if results else {
-            "prediction_id": data.prediction_id,
-            "status": "verified"
-        }
-
-    except Error as error:
+        for result in cur.stored_results():
+            results.extend(result.fetchall())
+        conn.commit()
+    except Error as exc:
         conn.rollback()
-        raise HTTPException(
-            status_code=400,
-            detail=str(error)
-        )
+        raise HTTPException(status_code=400, detail=str(exc))
     finally:
-        cursor.close()
+        cur.close()
         conn.close()
 
-    # Refresh the vector database after verification.
-    sync_failures()
-
-    return response
-
-
-@app.get("/api/lineage/{prediction_id}")
-def get_lineage(prediction_id: int):
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
-
+    db = get_connection()
     try:
-        cursor.execute("""
-            SELECT *
-            FROM data_lineage
-            WHERE prediction_id = %s
-        """, (prediction_id,))
-
-        result = cursor.fetchone()
-
-        if not result:
-            raise HTTPException(
-                status_code=404,
-                detail="Lineage not found. Verify the prediction first."
-            )
-
-        return result
+        indexed = index_existing_records(db)
     finally:
-        cursor.close()
+        db.close()
+    return {"verification": results, "indexed_records": indexed}
+
+
+@app.post("/api/admin/index-vectors")
+def index_vectors(user=Depends(admin_required)):
+    conn = get_connection()
+    try:
+        indexed = index_existing_records(conn)
+        return {"indexed_records": indexed, "vector_count": collection_count()}
+    finally:
         conn.close()
