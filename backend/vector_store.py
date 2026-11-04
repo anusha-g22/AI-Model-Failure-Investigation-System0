@@ -1,124 +1,112 @@
-
+import os
 from pathlib import Path
+
 import chromadb
-from chromadb.utils.embedding_functions import DefaultEmbeddingFunction
+from dotenv import load_dotenv
+from sklearn.feature_extraction.text import HashingVectorizer
 
-from database import get_connection
-
-BASE_DIR = Path(__file__).resolve().parent.parent
-CHROMA_DIR = BASE_DIR / "chroma_db"
+load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_PATH = BASE_DIR.parent / "chroma_db"
+CHROMA_DIR = Path(os.getenv("CHROMA_PATH", str(DEFAULT_PATH)))
+if not CHROMA_DIR.is_absolute():
+    CHROMA_DIR = (BASE_DIR / CHROMA_DIR).resolve()
 
 client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-
 collection = client.get_or_create_collection(
     name="failure_investigation",
-    embedding_function=DefaultEmbeddingFunction(),
-    metadata={"hnsw:space": "cosine"}
+    metadata={"hnsw:space": "cosine"},
+)
+_vectorizer = HashingVectorizer(
+    n_features=384, alternate_sign=False, norm="l2",
+    ngram_range=(1, 2), lowercase=True,
 )
 
 
-def sync_failures():
-    """Copy historical failures from MySQL into ChromaDB."""
-    conn = get_connection()
-    cursor = conn.cursor(dictionary=True)
+def _embed(texts):
+    return _vectorizer.transform(texts).toarray().astype("float32").tolist()
 
+
+def upsert_case(case_id: str, document: str, metadata: dict):
+    safe = {
+        key: value if isinstance(value, (str, int, float, bool)) else str(value)
+        for key, value in metadata.items() if value is not None
+    }
+    text = document[:12000]
+    collection.upsert(ids=[str(case_id)], documents=[text],
+                      embeddings=_embed([text]), metadatas=[safe])
+
+
+def search_cases(query: str, limit: int = 5):
+    count = collection.count()
+    if count == 0 or not query.strip():
+        return []
+    result = collection.query(
+        query_embeddings=_embed([query]),
+        n_results=min(max(1, limit), count),
+        include=["documents", "metadatas", "distances"],
+    )
+    rows = []
+    for i, case_id in enumerate(result.get("ids", [[]])[0]):
+        rows.append({
+            "id": case_id,
+            "document": result["documents"][0][i],
+            "metadata": result["metadatas"][0][i],
+            "distance": result["distances"][0][i],
+        })
+    return rows
+
+
+def collection_count():
+    return collection.count()
+
+
+def index_existing_records(connection):
+    cursor = connection.cursor(dictionary=True)
     try:
         cursor.execute("""
-            SELECT
-                f.failure_id,
-                p.prediction_id,
-                e.subject,
-                e.email_text,
-                p.predicted_class,
-                ar.actual_class,
-                ft.failure_type_name,
-                f.description
-            FROM failures f
-            JOIN predictions p
-                ON f.prediction_id = p.prediction_id
-            JOIN emails e
-                ON p.email_id = e.email_id
-            JOIN actual_results ar
-                ON p.prediction_id = ar.prediction_id
-            JOIN failure_types ft
-                ON f.failure_type_id = ft.failure_type_id
+            SELECT p.prediction_id, p.email_id, p.model_id, p.predicted_class,
+                   e.subject, e.email_text, ar.actual_class, f.failure_id,
+                   f.description, ft.failure_type_name
+            FROM predictions p
+            JOIN emails e ON e.email_id = p.email_id
+            LEFT JOIN actual_results ar ON ar.prediction_id = p.prediction_id
+            LEFT JOIN failures f ON f.prediction_id = p.prediction_id
+            LEFT JOIN failure_types ft ON ft.failure_type_id = f.failure_type_id
+            ORDER BY p.prediction_id
         """)
-
         rows = cursor.fetchall()
-
         for row in rows:
             document = (
-                f"Subject: {row['subject'] or ''}\n"
-                f"Email: {row['email_text']}\n"
-                f"Predicted: {row['predicted_class']}\n"
-                f"Actual: {row['actual_class']}\n"
-                f"Failure type: {row['failure_type_name']}\n"
-                f"Description: {row['description']}"
+                f"Subject: {row.get('subject') or ''}\n"
+                f"Email: {row.get('email_text') or ''}\n"
+                f"Predicted: {row.get('predicted_class') or ''}\n"
+                f"Actual: {row.get('actual_class') or 'Not verified'}\n"
+                f"Failure: {row.get('description') or ''}"
             )
-
-            collection.upsert(
-                ids=[f"failure_{row['failure_id']}"],
-                documents=[document],
-                metadatas=[{
-                    "failure_id": row["failure_id"],
+            upsert_case(
+                f"prediction-{row['prediction_id']}", document, {
                     "prediction_id": row["prediction_id"],
-                    "failure_type": row["failure_type_name"]
-                }]
+                    "email_id": row["email_id"],
+                    "model_id": row["model_id"],
+                    "predicted_class": row["predicted_class"],
+                    "actual_class": row.get("actual_class"),
+                    "failure_id": row.get("failure_id"),
+                    "failure_type": row.get("failure_type_name"),
+                    "record_type": "historical_prediction",
+                }
             )
-
         return len(rows)
-
     finally:
         cursor.close()
-        conn.close()
-
-
-def search_similar_failures(query, limit=5):
-    """Search for semantically similar historical failures."""
-    if not query.strip():
-        return []
-
-    count = collection.count()
-
-    if count == 0:
-        return []
-
-    results = collection.query(
-        query_texts=[query],
-        n_results=min(limit, count),
-        include=["documents", "metadatas", "distances"]
-    )
-
-    matches = []
-
-    for document, metadata, distance in zip(
-        results["documents"][0],
-        results["metadatas"][0],
-        results["distances"][0]
-    ):
-        matches.append({
-            "document": document,
-            "metadata": metadata,
-            "similarity_score": round(
-                max(0.0, min(1.0, 1.0 - distance)), 4
-            )
-        })
-
-    return matches
 
 
 if __name__ == "__main__":
-    total = sync_failures()
-
-    print(f"Synced {total} failure records from MySQL")
-    print(f"Total vectors in ChromaDB: {collection.count()}")
-
-    query = "Bank statement classified incorrectly"
-
-    print(f"\nSearching for: {query}")
-
-    for result in search_similar_failures(query):
-        print("\n--------------------------")
-        print("Similarity:", result["similarity_score"])
-        print("Metadata:", result["metadata"])
-        print("Document:", result["document"])
+    from database import get_connection
+    db = get_connection()
+    try:
+        indexed = index_existing_records(db)
+        print(f"Indexed {indexed} prediction records.")
+        print(f"Total vectors: {collection_count()}")
+    finally:
+        db.close()
